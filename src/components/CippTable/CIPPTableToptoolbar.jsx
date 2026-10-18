@@ -1,4 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useCallback,
+} from 'react'
 import { CippIcons } from '../../utils/icon-registry'
 import { createPortal } from 'react-dom'
 import {
@@ -97,6 +104,7 @@ export const CIPPTableToptoolbar = React.memo(
     searchValue = '',
     setSearchValue,
     restoredFiltersRef,
+    searchFocusRef,
     persistenceKey,
     parentRow,
   }) => {
@@ -200,7 +208,15 @@ export const CIPPTableToptoolbar = React.memo(
       } else if (data && !getRequestData.isFetched) {
         // do nothing because data was sent native.
       } else if (getRequestData) {
-        getRequestData.refetch()
+        // refetch() on an infinite query re-requests every cached page in sequence and only
+        // renders once all of them are back. Reset the query instead so it starts from page
+        // one again and the table's auto-pager streams the rest in page by page, exactly like
+        // the initial load. The key must be the effective one: an active graph filter preset
+        // keys the query on `${queryKey}-${presetName}` rather than the base key.
+        queryClient.resetQueries({
+          queryKey: [currentEffectiveQueryKey],
+          exact: true,
+        })
       }
     }
 
@@ -483,6 +499,31 @@ export const CIPPTableToptoolbar = React.memo(
       [table]
     )
 
+ 
+//fixes search popping oiut of focus
+    const searchInputRef = useRef(null)
+    useLayoutEffect(() => {
+      const input = searchInputRef.current
+      const pending = searchFocusRef?.current
+      if (input && pending) {
+        searchFocusRef.current = null
+        input.focus({ preventScroll: true })
+        try {
+          input.setSelectionRange(pending.start, pending.end)
+        } catch {
+          // caret restore is best-effort
+        }
+      }
+      return () => {
+        if (searchFocusRef && input && document.activeElement === input) {
+          searchFocusRef.current = {
+            start: input.selectionStart,
+            end: input.selectionEnd,
+          }
+        }
+      }
+    }, [searchFocusRef])
+
     // Clean up debounce timer on unmount.
     useEffect(() => {
       return () => {
@@ -520,11 +561,12 @@ export const CIPPTableToptoolbar = React.memo(
     }
 
     const resetToPreferedVisibility = () => {
-      if (
-        settings?.columnDefaults?.[pageName] &&
-        Object.keys(settings?.columnDefaults?.[pageName]).length > 0
-      ) {
-        setColumnVisibility(settings?.columnDefaults?.[pageName])
+      const preferred = settings?.columnDefaults?.[pageName]
+      if (preferred && Object.keys(preferred).length > 0) {
+        // Layer the saved selection over the current map. Replacing it would leave every
+        // field the preference never saw without an entry, and TanStack shows a column
+        // that has no entry, so a tenant with extra fields would suddenly reveal them.
+        setColumnVisibility((previous) => ({ ...previous, ...preferred }))
       } else {
         setColumnVisibility((prevVisibility) => {
           const updatedVisibility = {}
@@ -1133,6 +1175,7 @@ export const CIPPTableToptoolbar = React.memo(
                 placeholder="Search..."
                 value={searchValue}
                 onChange={handleSearchChange}
+                inputRef={searchInputRef}
               />
             </ModernSearchContainer>
 
